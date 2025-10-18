@@ -1,0 +1,11 @@
+package com.example.app.model;
+
+import lombok.Builder;
+import lombok.Data;
+
+@Builder
+@Data
+public class Message {
+    private TransitionStatus status;
+    private String message;
+}
