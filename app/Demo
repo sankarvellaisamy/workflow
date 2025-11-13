@@ -462,3 +462,17 @@ show an example test class that uses BaseClass and verifies header injection (us
 
 
 Which of those would help you next?
+
+
+
+<dependency>
+    <groupId>org.apache.httpcomponents.core5</groupId>
+    <artifactId>httpcore5</artifactId>
+    <version>5.2.4</version>
+</dependency>
+
+<dependency>
+    <groupId>org.apache.httpcomponents.client5</groupId>
+    <artifactId>httpclient5</artifactId>
+    <version>5.2.3</version>
+</dependency>
