@@ -177,3 +177,288 @@ public class BaseClass {
         return driver;
     }
 }
+
+
+
+Nice — below is a production-ready BaseClass that:
+
+Supports chrome, edge, msedge, chromium, edge-chromium config values
+
+Loads headers from config.properties using keys prefixed with header. (Option B)
+
+Uses Selenium/CDP via executeCdpCommand to inject headers for Chrome & Edge (Edge uses Chromium CDP)
+
+Uses WebDriverManager to resolve drivers (no manual System.setProperty required) — optional, you can keep your own chromedriver path if you prefer
+
+Has clean lifecycle methods (@BeforeClass @AfterSuite) matching your earlier screenshots
+
+Easy to drop into your project and extend
+
+
+
+---
+
+1) BaseClass.java
+
+package com.plcs.base;
+
+import io.github.bonigarcia.wdm.WebDriverManager;
+import org.junit.After;
+import org.junit.AfterClass;
+import org.junit.BeforeClass;
+import org.openqa.selenium.WebDriver;
+import org.openqa.selenium.chrome.ChromeOptions;
+import org.openqa.selenium.edge.EdgeOptions;
+import org.openqa.selenium.remote.RemoteWebDriver;
+import org.openqa.selenium.chromium.ChromiumDriver;
+import org.openqa.selenium.chrome.ChromeDriver;
+import org.openqa.selenium.edge.EdgeDriver;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.time.Duration;
+import java.util.*;
+import java.util.stream.Collectors;
+
+/**
+ * BaseClass: Initializes WebDriver (Chrome/Edge) and injects custom headers
+ * via Chrome DevTools Protocol (CDP) using executeCdpCommand.
+ *
+ * Headers are read from config.properties with prefix "header."
+ *
+ * Example config.properties:
+ *   browser=chrome
+ *   plcsQaUrl=https://your-app-url
+ *   header.DDP_FTOGGLE_22608_USER=sgujral
+ *   header.DDP_FTOGGLE_22608_GROUPS=DyGrp-ID-VisaEmployee|DyGrp-ID-VisaNonEmployee
+ *   header.X-API-Key=SVC_FTOGGLE_DEV:06Y7TF5F7B2W:F^m
+ *   header.Referer=https://abc.visa.com
+ *   header.Origin=https://abc.visa.com
+ */
+public class BaseClass {
+
+    protected static WebDriver driver;
+    protected static Properties config = new Properties();
+    private static final String CONFIG_FILE = "/config.properties";
+
+    @BeforeClass
+    public static void setUp() {
+        loadConfig();
+        String browser = Optional.ofNullable(config.getProperty("browser")).orElse("chrome").trim().toLowerCase();
+
+        // Initialize driver based on browser identifiers
+        if (isChromeVariant(browser)) {
+            initChromeDriver();
+        } else if (isEdgeVariant(browser)) {
+            initEdgeDriver();
+        } else {
+            throw new IllegalArgumentException("Browser \"" + browser + "\" not supported (supported: chrome, edge, msedge, chromium, edge-chromium)");
+        }
+
+        // maximize & timeouts
+        driver.manage().window().maximize();
+        driver.manage().timeouts().implicitlyWait(Duration.ofSeconds(10));
+
+        // Load headers from config and inject for Chromium-based drivers
+        Map<String, String> headers = loadHeadersFromConfig();
+        if (!headers.isEmpty()) {
+            injectHeadersIfChromium(headers);
+        }
+
+        // Navigate to configured URL
+        String url = config.getProperty("plcsQaUrl");
+        if (url != null && !url.isBlank()) {
+            driver.get(url);
+        }
+    }
+
+    @AfterClass
+    public static void tearDown() {
+        if (driver != null) {
+            try {
+                driver.quit();
+            } catch (Exception ignored) { }
+        }
+    }
+
+    // ----------------------
+    // Helper methods
+    // ----------------------
+
+    private static boolean isChromeVariant(String browser) {
+        return browser.equals("chrome") || browser.equals("chromium");
+    }
+
+    private static boolean isEdgeVariant(String browser) {
+        return browser.equals("edge") || browser.equals("msedge") || browser.equals("edge-chromium");
+    }
+
+    private static void initChromeDriver() {
+        // Use WebDriverManager to manage driver binaries (optional)
+        WebDriverManager.chromedriver().setup();
+
+        ChromeOptions options = new ChromeOptions();
+        options.addArguments("--disable-blink-features=AutomationControlled");
+        options.addArguments("--start-maximized");
+
+        driver = new ChromeDriver(options);
+    }
+
+    private static void initEdgeDriver() {
+        // Use WebDriverManager for Edge driver (optional)
+        WebDriverManager.edgedriver().setup();
+
+        EdgeOptions options = new EdgeOptions();
+        options.addArguments("--disable-blink-features=AutomationControlled");
+        options.addArguments("--start-maximized");
+
+        driver = new EdgeDriver(options);
+    }
+
+    /**
+     * Loads all properties from /config.properties on classpath.
+     * If you already have a configReader class, you can replace this with it.
+     */
+    private static void loadConfig() {
+        try (InputStream is = BaseClass.class.getResourceAsStream(CONFIG_FILE)) {
+            if (is == null) {
+                throw new RuntimeException("Could not find " + CONFIG_FILE + " on classpath");
+            }
+            config.load(is);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to load config file " + CONFIG_FILE, e);
+        }
+    }
+
+    /**
+     * Reads all keys that start with header. and returns a Map<HeaderName, HeaderValue>
+     */
+    private static Map<String, String> loadHeadersFromConfig() {
+        return config.stringPropertyNames().stream()
+                .filter(k -> k.startsWith("header."))
+                .collect(Collectors.toMap(
+                        k -> k.substring("header.".length()),
+                        config::getProperty
+                ));
+    }
+
+    /**
+     * Inject headers only if driver is Chromium-based (ChromeDriver or EdgeDriver).
+     * Uses executeCdpCommand which is stable across many Selenium versions.
+     */
+    private static void injectHeadersIfChromium(Map<String, String> headers) {
+        if (driver == null) return;
+
+        if (driver instanceof ChromiumDriver) {
+            ChromiumDriver chromium = (ChromiumDriver) driver;
+            // Enable Network (best practice)
+            try {
+                // Some Selenium versions support "Network.enable" via executeCdpCommand
+                Map<String, Object> enableParams = new HashMap<>();
+                enableParams.put("maxTotalBufferSize", 0);
+                chromium.executeCdpCommand("Network.enable", enableParams);
+
+                // setExtraHTTPHeaders expects an object with "headers" -> {name:value}
+                Map<String, Object> headersParam = new HashMap<>();
+                headersParam.put("headers", headers);
+                chromium.executeCdpCommand("Network.setExtraHTTPHeaders", headersParam);
+
+                // Optionally: log success
+                System.out.println("Injected custom headers via CDP: " + headers.keySet());
+            } catch (Exception e) {
+                System.err.println("Failed to inject headers via CDP: " + e.getMessage());
+                // do not fail the whole test initialization just because header injection failed
+            }
+        } else {
+            System.out.println("Driver is not Chromium-based; header injection skipped.");
+        }
+    }
+
+    // Expose driver for tests
+    public WebDriver getDriver() {
+        return driver;
+    }
+}
+
+
+---
+
+2) config.properties (example)
+
+Place this under src/test/resources/config.properties (or on classpath):
+
+# choose one of: chrome, chromium, edge, msedge, edge-chromium
+browser=chrome
+
+plcsQaUrl=https://your-app-url
+
+# headers (prefix = header.)
+header.DDP_FTOGGLE_22608_USER=sgujral
+header.DDP_FTOGGLE_22608_GROUPS=DyGrp-ID-VisaEmployee|DyGrp-ID-VisaNonEmployee
+header.X-API-Key=SVC_FTOGGLE_DEV:06Y7TF5F7B2W:F^m
+header.Referer=https://abc.visa.com
+header.Origin=https://abc.visa.com
+
+
+---
+
+3) Maven dependencies (snippet)
+
+Add these to your pom.xml. If you already use Selenium & WebDriverManager, adapt versions to your project:
+
+<dependencies>
+    <!-- Selenium -->
+    <dependency>
+        <groupId>org.seleniumhq.selenium</groupId>
+        <artifactId>selenium-java</artifactId>
+        <version>4.13.0</version> <!-- adapt to the version you use -->
+    </dependency>
+
+    <!-- WebDriverManager (optional, simplifies driver binaries) -->
+    <dependency>
+        <groupId>io.github.bonigarcia</groupId>
+        <artifactId>webdrivermanager</artifactId>
+        <version>5.4.1</version>
+    </dependency>
+
+    <!-- JUnit (if you use JUnit 4 style @BeforeClass) -->
+    <dependency>
+        <groupId>junit</groupId>
+        <artifactId>junit</artifactId>
+        <version>4.13.2</version>
+    </dependency>
+</dependencies>
+
+> If you prefer not to use WebDriverManager, replace WebDriverManager.*.setup() by your System.setProperty("webdriver.chrome.driver", "...") lines — the class will still work.
+
+
+
+
+---
+
+Notes & tips
+
+I used executeCdpCommand because it is stable across Selenium versions and works both for ChromeDriver and EdgeDriver (Edge is Chromium-based). It avoids depending on a particular devtools package version.
+
+Header injection via CDP affects all subsequent network requests from the browser session. This is suitable for tests that require fixed headers for authentication/feature toggles.
+
+If you need to add or remove headers at runtime between tests, call injectHeadersIfChromium() again with a modified map (it will replace the extra headers).
+
+If you want to scope headers to particular origins/pages only, more advanced CDP flows are required (intercept requests and modify headers) — I can provide that if needed.
+
+If you already have a ConfigReader utility in your codebase, you can replace the loadConfig() / config usage with your existing reader; the loadHeadersFromConfig() logic expects header. prefixed keys.
+
+
+
+---
+
+If you want, I can now:
+
+adapt the class to your existing ConfigReader (just paste its getProperty snippet), or
+
+add a method to selectively remove headers, or
+
+show an example test class that uses BaseClass and verifies header injection (using a mock server or request-catcher endpoint).
+
+
+Which of those would help you next?
